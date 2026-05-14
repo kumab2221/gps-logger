@@ -73,6 +73,67 @@ def nmea_checksum_ok(line: str):
         return False
 
 
+def parse_float(text: str):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_nmea_coord(value: str, hemisphere: str):
+    if not value or not hemisphere:
+        return None
+
+    dot_index = value.find(".")
+    if dot_index < 0 or dot_index < 2:
+        return None
+
+    degree_len = dot_index - 2
+    try:
+        degrees = int(value[:degree_len])
+        minutes = float(value[degree_len:])
+    except ValueError:
+        return None
+
+    decimal = degrees + minutes / 60.0
+    if hemisphere in ["S", "W"]:
+        decimal *= -1
+
+    return decimal
+
+
+def rmc_status_label(value: str):
+    return {
+        "A": "有効/fixあり",
+        "V": "無効/fixなし",
+    }.get(value or "", "不明")
+
+
+def fix_quality_label(value: str):
+    return {
+        "0": "fixなし",
+        "1": "GPS fixあり",
+        "2": "DGPS fixあり",
+        "4": "RTK fixed",
+        "5": "RTK float",
+    }.get(value or "", "不明")
+
+
+def hdop_label(value: str):
+    hdop = parse_float(value)
+    if hdop is None:
+        return "unknown"
+    if hdop <= 1.0:
+        return "非常に良い"
+    if hdop <= 2.0:
+        return "良い"
+    if hdop <= 5.0:
+        return "普通"
+    if hdop <= 10.0:
+        return "悪い"
+    return "無効/かなり悪い"
+
+
 def parse_status(line: str):
     if not line.startswith("$"):
         return {}
@@ -83,13 +144,39 @@ def parse_status(line: str):
     status = {"last_sentence": msg}
 
     if msg.endswith("GGA") and len(fields) > 8:
+        latitude = parse_nmea_coord(fields[2], fields[3]) if len(fields) > 4 else None
+        longitude = parse_nmea_coord(fields[4], fields[5]) if len(fields) > 6 else None
+
         status["gga_utc"] = fields[1]
         status["fix_quality"] = fields[6]
+        status["fix_quality_label"] = fix_quality_label(fields[6])
         status["satellites_used"] = fields[7]
         status["hdop"] = fields[8]
+        status["hdop_label"] = hdop_label(fields[8])
+
+        if latitude is not None and longitude is not None:
+            status["latitude"] = round(latitude, 8)
+            status["longitude"] = round(longitude, 8)
+            status["position"] = f"{latitude:.8f},{longitude:.8f}"
+
+        if len(fields) > 10:
+            status["altitude_m"] = fields[9]
     elif msg.endswith("RMC") and len(fields) > 2:
+        latitude = parse_nmea_coord(fields[3], fields[4]) if len(fields) > 5 else None
+        longitude = parse_nmea_coord(fields[5], fields[6]) if len(fields) > 7 else None
+
         status["rmc_utc"] = fields[1]
         status["rmc_status"] = fields[2]
+        status["rmc_status_label"] = rmc_status_label(fields[2])
+
+        if latitude is not None and longitude is not None:
+            status["latitude"] = round(latitude, 8)
+            status["longitude"] = round(longitude, 8)
+            status["position"] = f"{latitude:.8f},{longitude:.8f}"
+
+        if len(fields) > 8:
+            status["speed_knots"] = fields[7]
+            status["course_deg"] = fields[8]
     elif msg.endswith("GSA") and len(fields) > 2:
         status["gsa_fix_type"] = fields[2]
     elif msg.endswith("GSV") and len(fields) > 3:
@@ -184,10 +271,19 @@ class DisplayMirror:
                 f"checksum ok/ng: {status.get('checksum_ok', 0)}/{status.get('checksum_ng', 0)}"
             ),
             (
-                f"RMC: {status.get('rmc_status', '-')}  "
-                f"GGA fix: {status.get('fix_quality', '-')}  "
-                f"sats: {status.get('satellites_used', '-')}  "
-                f"HDOP: {status.get('hdop', '-')}"
+                f"fix: {status.get('fix_quality', '-')} "
+                f"({status.get('fix_quality_label', '-')})  "
+                f"RMC: {status.get('rmc_status', '-')} "
+                f"({status.get('rmc_status_label', '-')})"
+            ),
+            (
+                f"緯度/経度: {status.get('position', '-')}  "
+                f"高度(m): {status.get('altitude_m', '-')}"
+            ),
+            (
+                f"使用衛星数: {status.get('satellites_used', '-')}  "
+                f"HDOP(信頼度目安): {status.get('hdop', '-')} "
+                f"({status.get('hdop_label', '-')}, 低いほど良い)"
             ),
             "",
             "recent NMEA:",

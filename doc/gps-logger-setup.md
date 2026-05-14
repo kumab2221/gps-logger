@@ -59,7 +59,7 @@ Raspberry Pi 上では、運用用に `gps_logger.py` を `/opt/gps-logger/gps_l
 | `part_*.tsv` | Raspberry Pi 側時刻、起動後秒数、NMEA 文 | 測定時刻や欠損確認用 |
 | `latest_status.json` | 最新の受信状態 | 動作確認、fix 状態確認 |
 | `session_meta.json` | セッション開始情報 | 測定単位の識別 |
-| 画面表示 | 最新状態と直近の NMEA 文 | ディスプレイ接続時の現地確認 |
+| 画面表示 | 最新状態、緯度経度、HDOP、直近の NMEA 文 | ディスプレイ接続時の現地確認 |
 
 `host_time` はネットワーク未接続時にズレている可能性があるため、解析時には `monotonic_sec` も併用する。
 
@@ -278,7 +278,8 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
   "last_raw": "$GPRMC,,V,,,,,,,,,,N*53",
   "last_sentence": "$GPRMC",
   "rmc_utc": "",
-  "rmc_status": "V"
+  "rmc_status": "V",
+  "rmc_status_label": "無効/fixなし"
 }
 ```
 
@@ -290,7 +291,8 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
 
 - 最新更新時刻
 - 受信行数とチェックサム OK/NG 数
-- RMC/GGA の測位状態
+- fix 状態、RMC 状態、緯度経度
+- 使用衛星数、HDOP(信頼度目安、低いほど良い)
 - 直近の NMEA 文
 
 画面表示を明示的に無効化する場合は、systemd の `ExecStart` に `--display never` を追加する。
@@ -334,6 +336,16 @@ $GPGGA,055012.00,3439.1234,N,13530.5678,E,1,08,1.2,50.0,M,34.0,M,,*5A
 | GPGGA | `1` | GPS fix あり |
 | GPGGA | `08` | 8 衛星使用 |
 | GPGGA | `1.2` | HDOP 良好 |
+
+HDOP は信頼度の目安として見る。厳密には水平精度の劣化率で、**低いほど良い**。
+
+| HDOP | 表示 | 目安 |
+|---|---|---|
+| `<= 1.0` | `非常に良い` | とても良い |
+| `<= 2.0` | `良い` | 良い |
+| `<= 5.0` | `普通` | 使えるが注意 |
+| `<= 10.0` | `悪い` | 悪い |
+| `> 10.0` | `無効/かなり悪い` | 無効またはかなり悪い |
 
 最低限見る変化:
 
@@ -455,7 +467,22 @@ $GPGGA,時刻,緯度,N,経度,E,fix品質,衛星数,HDOP,...
 | 経度 | `13530.5678,E` | 東経 |
 | fix 品質 | `1` | GPS fix あり |
 | 衛星数 | `08` | 8 衛星使用 |
-| HDOP | `1.2` | 精度指標 |
+| HDOP | `1.2` | 信頼度目安。低いほど良い |
+
+`latest_status.json` では、緯度経度は10進度にも変換して保存する。
+
+```json
+{
+  "latitude": 34.65205667,
+  "longitude": 135.50946333,
+  "position": "34.65205667,135.50946333",
+  "fix_quality": "1",
+  "fix_quality_label": "GPS fixあり",
+  "satellites_used": "08",
+  "hdop": "1.2",
+  "hdop_label": "良い"
+}
+```
 
 ### 12. 1Hz / 9600bps の GPS モジュールを使う場合
 
