@@ -292,6 +292,12 @@ class DisplayMirror:
         for recent in self.recent_lines:
             lines.append(recent[:160])
 
+        lines.extend([
+            "",
+            "Stop: Ctrl+Alt+F2 -> login -> sudo systemctl stop gps-logger",
+            "Back: Ctrl+Alt+F1",
+        ])
+
         try:
             self.stream.write("\n".join(lines) + "\n")
             self.stream.flush()

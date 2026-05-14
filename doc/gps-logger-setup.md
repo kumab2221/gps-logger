@@ -294,6 +294,7 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
 - fix 状態、RMC 状態、緯度経度
 - 使用衛星数、HDOP(信頼度目安、低いほど良い)
 - 直近の NMEA 文
+- 停止方法: `Ctrl+Alt+F2` で別TTYに移動してログイン後、`sudo systemctl stop gps-logger`
 
 画面表示を明示的に無効化する場合は、systemd の `ExecStart` に `--display never` を追加する。
 
