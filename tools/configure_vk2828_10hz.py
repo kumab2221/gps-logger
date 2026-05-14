@@ -47,6 +47,16 @@ def cfg_rate_10hz() -> bytes:
     ])
 
 
+def cfg_sbas_enabled() -> bytes:
+    return bytes([
+        0x01,                    # mode: SBAS enabled
+        0x07,                    # usage: range + differential correction + integrity
+        0x03,                    # maxSBAS: use up to 3 prioritized SBAS channels
+        0x00,                    # scanmode2: auto scan
+        0x00, 0x00, 0x00, 0x00,  # scanmode1: auto scan all valid PRNs
+    ])
+
+
 def cfg_msg_nmea(msg_id: int, uart1_rate: int) -> bytes:
     return bytes([
         0xF0,
@@ -96,6 +106,7 @@ def main():
     parser.add_argument("--initial-baud", type=int, default=9600)
     parser.add_argument("--target-baud", type=int, default=115200)
     parser.add_argument("--preview-sec", type=float, default=3.0)
+    parser.add_argument("--no-sbas", action="store_true", help="do not enable SBAS/MSAS")
     parser.add_argument("--no-save", action="store_true", help="do not save settings to module flash")
     args = parser.parse_args()
 
@@ -111,6 +122,10 @@ def main():
     with serial.Serial(args.port, 115200, timeout=1) as ser:
         print("Setting navigation rate to 10Hz...")
         write_ubx(ser, 0x06, 0x08, cfg_rate_10hz())
+
+        if not args.no_sbas:
+            print("Enabling SBAS/MSAS auto-scan...")
+            write_ubx(ser, 0x06, 0x16, cfg_sbas_enabled())
 
         print("Enabling GGA/RMC and disabling GSA/GSV/VTG/GLL on UART1...")
         for msg_id in [0x00, 0x04]:  # GGA, RMC
