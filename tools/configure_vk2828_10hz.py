@@ -10,6 +10,18 @@ except ImportError:
     raise
 
 
+DYNAMIC_MODELS = {
+    "portable": 0,
+    "stationary": 2,
+    "pedestrian": 3,
+    "automotive": 4,
+    "sea": 5,
+    "airborne-1g": 6,
+    "airborne-2g": 7,
+    "airborne-4g": 8,
+}
+
+
 def ubx_checksum(payload: bytes) -> bytes:
     ck_a = ck_b = 0
     for b in payload:
@@ -45,6 +57,13 @@ def cfg_rate_10hz() -> bytes:
         0x01, 0x00,  # navRate=1
         0x01, 0x00,  # timeRef=GPS
     ])
+
+
+def cfg_nav5_dynamic_model(model: str) -> bytes:
+    payload = bytearray(36)
+    payload[0:2] = (0x0001).to_bytes(2, "little")  # apply dynModel only
+    payload[2] = DYNAMIC_MODELS[model]
+    return bytes(payload)
 
 
 def cfg_sbas_enabled() -> bytes:
@@ -106,6 +125,12 @@ def main():
     parser.add_argument("--initial-baud", type=int, default=9600)
     parser.add_argument("--target-baud", type=int, default=115200)
     parser.add_argument("--preview-sec", type=float, default=3.0)
+    parser.add_argument(
+        "--dynamic-model",
+        choices=["none", *DYNAMIC_MODELS.keys()],
+        default="automotive",
+        help="navigation dynamic model",
+    )
     parser.add_argument("--no-sbas", action="store_true", help="do not enable SBAS/MSAS")
     parser.add_argument("--no-save", action="store_true", help="do not save settings to module flash")
     args = parser.parse_args()
@@ -122,6 +147,10 @@ def main():
     with serial.Serial(args.port, 115200, timeout=1) as ser:
         print("Setting navigation rate to 10Hz...")
         write_ubx(ser, 0x06, 0x08, cfg_rate_10hz())
+
+        if args.dynamic_model != "none":
+            print(f"Setting dynamic model to {args.dynamic_model}...")
+            write_ubx(ser, 0x06, 0x24, cfg_nav5_dynamic_model(args.dynamic_model))
 
         if not args.no_sbas:
             print("Enabling SBAS/MSAS auto-scan...")
