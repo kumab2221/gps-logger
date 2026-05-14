@@ -22,7 +22,7 @@ Raspberry Pi 起動
   ↓
 systemd により GPS ロガーを自動起動
   ↓
-/dev/serial0 から NMEA を読み続ける
+/dev/ttyAMA0 から NMEA を読み続ける
   ↓
 /var/log/gps-logger/ にログ保存
   ↓
@@ -42,6 +42,14 @@ systemd により GPS ロガーを自動起動
 | `doc/VK2828U7G5LF_GPSモジュール.md` | GPS モジュールの配線、ピン、更新レート設定 |
 
 Raspberry Pi 上では、運用用に `gps_logger.py` を `/opt/gps-logger/gps_logger.py` へ配置する。
+
+このプロジェクトのデフォルトは、GPS モジュールが 10Hz / 115200bps に設定済みである前提。
+
+| 項目 | デフォルト |
+|---|---|
+| UART ポート | `/dev/ttyAMA0` |
+| ボーレート | `115200` |
+| 想定更新レート | `10Hz` |
 
 ## 保存するログ
 
@@ -71,7 +79,7 @@ systemd に載せる前、またはスクリプト変更後は手動で確認す
 
 ```bash
 mkdir -p ./run/gps-logger
-sudo ./gps_logger.py --port /dev/serial0 --baud 9600 --out ./run/gps-logger --rotate-sec 60 --fsync-sec 2
+sudo ./gps_logger.py --out ./run/gps-logger --rotate-sec 60 --fsync-sec 2
 ```
 
 別ターミナルでログを確認する。
@@ -97,7 +105,7 @@ sudo cat ./run/gps-logger/latest_status.json
 画面表示の内容をターミナル上で確認したい場合は、表示先に標準出力を指定する。
 
 ```bash
-sudo ./gps_logger.py --port /dev/serial0 --baud 9600 --out ./run/gps-logger --display always --display-tty -
+sudo ./gps_logger.py --out ./run/gps-logger --display always --display-tty -
 ```
 
 ### 3. 運用場所へ反映する
@@ -160,16 +168,16 @@ Interface Options
 sudo reboot
 ```
 
-再起動後、`/dev/serial0` が存在することを確認する。
+再起動後、`/dev/ttyAMA0` が存在することを確認する。
 
 ```bash
-ls -l /dev/serial0
+ls -l /dev/ttyAMA0
 ```
 
 例:
 
 ```text
-/dev/serial0 -> ttyAMA0
+/dev/ttyAMA0
 ```
 
 ### 3. gpsd を停止する
@@ -216,7 +224,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/serial0 --baud 9600 --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
 Restart=always
 RestartSec=2
 StandardOutput=journal
@@ -261,8 +269,8 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
 ```json
 {
   "started_at": "2026-05-12T14:20:31.123456+09:00",
-  "port": "/dev/serial0",
-  "baud": 9600,
+  "port": "/dev/ttyAMA0",
+  "baud": 115200,
   "total_lines": 25,
   "checksum_ok": 25,
   "checksum_ng": 0,
@@ -288,13 +296,13 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
 画面表示を明示的に無効化する場合は、systemd の `ExecStart` に `--display never` を追加する。
 
 ```ini
-ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/serial0 --baud 9600 --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2 --display never
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2 --display never
 ```
 
 ディスプレイ検出に関係なく強制表示する場合は、以下のようにする。
 
 ```ini
-ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/serial0 --baud 9600 --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2 --display always --display-tty /dev/tty1
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2 --display always --display-tty /dev/tty1
 ```
 
 ### 7. 測位成功・失敗の見方
@@ -449,24 +457,22 @@ $GPGGA,時刻,緯度,N,経度,E,fix品質,衛星数,HDOP,...
 | 衛星数 | `08` | 8 衛星使用 |
 | HDOP | `1.2` | 精度指標 |
 
-### 12. 10Hz 測定する場合
+### 12. 1Hz / 9600bps の GPS モジュールを使う場合
 
-GPS モジュールが 10Hz 出力の場合、`9600bps` では不足する可能性がある。
+このプロジェクトのデフォルトは 10Hz / 115200bps。工場出荷状態などで GPS モジュールが 1Hz / 9600bps の場合は、ロガー側も明示的に合わせる。
 
 | 出力周期 | 推奨ボーレート |
 |---|---|
 | 1Hz | 9600bps |
 | 5Hz | 38400bps 以上 |
-| 10Hz | 57600bps または 115200bps |
-
-最初は `1Hz / 9600bps` で確認し、その後必要なら高速化する。
+| 10Hz | 115200bps |
 
 GPS モジュール側の更新レート変更は [VK2828U7G5LF_GPSモジュール.md](VK2828U7G5LF_GPSモジュール.md) を参照。
 
-Raspberry Pi 側のボーレートを変更する場合は、systemd サービスの `ExecStart` を変更する。
+Raspberry Pi 側を 1Hz / 9600bps に戻す場合は、systemd サービスの `ExecStart` を変更する。
 
 ```ini
-ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/serial0 --baud 115200 --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/ttyAMA0 --baud 9600 --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
 ```
 
 反映する。
@@ -490,7 +496,7 @@ sudo journalctl -u gps-logger -n 100
 |---|---|
 | GPS TX/RX 配線ミス | GPS TX → Pi RX を確認 |
 | UART 無効 | `raspi-config` で有効化 |
-| `/dev/serial0` がない | UART 設定確認 |
+| `/dev/ttyAMA0` がない | UART 設定確認 |
 | ボーレート違い | 9600 / 38400 / 115200 を試す |
 | 電源不足 | 安定した電源を使う |
 

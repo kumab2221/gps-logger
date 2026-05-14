@@ -286,16 +286,16 @@ class RollingLogger:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", default="/dev/serial0")
-    parser.add_argument("--baud", type=int, default=9600)
-    parser.add_argument("--out", default="/var/log/gps-logger")
-    parser.add_argument("--rotate-sec", type=int, default=300)
-    parser.add_argument("--fsync-sec", type=int, default=2)
-    parser.add_argument("--display", choices=["auto", "always", "never"], default="auto")
-    parser.add_argument("--display-tty", default="/dev/tty1")
-    parser.add_argument("--display-lines", type=int, default=12)
-    parser.add_argument("--display-refresh-sec", type=float, default=1.0)
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--port", default="/dev/ttyAMA0", help="UART device to read NMEA from")
+    parser.add_argument("--baud", type=int, default=115200, help="UART baud rate")
+    parser.add_argument("--out", default="/var/log/gps-logger", help="log output directory")
+    parser.add_argument("--rotate-sec", type=int, default=300, help="seconds per log part")
+    parser.add_argument("--fsync-sec", type=int, default=2, help="seconds between fsync calls")
+    parser.add_argument("--display", choices=["auto", "always", "never"], default="auto", help="local display mode")
+    parser.add_argument("--display-tty", default="/dev/tty1", help="display output target, or '-' for stdout")
+    parser.add_argument("--display-lines", type=int, default=12, help="recent NMEA lines shown on display")
+    parser.add_argument("--display-refresh-sec", type=float, default=1.0, help="display refresh interval")
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, handle_signal)
