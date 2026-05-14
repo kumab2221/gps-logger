@@ -1,0 +1,14 @@
+[Unit]
+Description=Offline GPS NMEA Logger
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
