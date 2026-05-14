@@ -287,6 +287,8 @@ sudo find /var/log/gps-logger -type f -printf "%p %s bytes\n"
 
 ディスプレイが接続されている場合は、`/dev/tty1` にライブ表示される。
 
+tty1 の文字化けを避けるため、CUIライブ表示は英数字中心のASCII表記にしている。日本語の説明ラベルは `latest_status.json` に保存する。
+
 表示される内容:
 
 - 最新更新時刻

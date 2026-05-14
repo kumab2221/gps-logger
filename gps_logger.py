@@ -134,6 +134,38 @@ def hdop_label(value: str):
     return "無効/かなり悪い"
 
 
+def rmc_status_label_ascii(value: str):
+    return {
+        "A": "valid/fix",
+        "V": "invalid/no-fix",
+    }.get(value or "", "unknown")
+
+
+def fix_quality_label_ascii(value: str):
+    return {
+        "0": "no-fix",
+        "1": "gps-fix",
+        "2": "dgps-fix",
+        "4": "rtk-fixed",
+        "5": "rtk-float",
+    }.get(value or "", "unknown")
+
+
+def hdop_label_ascii(value: str):
+    hdop = parse_float(value)
+    if hdop is None:
+        return "unknown"
+    if hdop <= 1.0:
+        return "excellent"
+    if hdop <= 2.0:
+        return "good"
+    if hdop <= 5.0:
+        return "moderate"
+    if hdop <= 10.0:
+        return "poor"
+    return "invalid/very-poor"
+
+
 def parse_status(line: str):
     if not line.startswith("$"):
         return {}
@@ -272,18 +304,18 @@ class DisplayMirror:
             ),
             (
                 f"fix: {status.get('fix_quality', '-')} "
-                f"({status.get('fix_quality_label', '-')})  "
+                f"({fix_quality_label_ascii(status.get('fix_quality', ''))})  "
                 f"RMC: {status.get('rmc_status', '-')} "
-                f"({status.get('rmc_status_label', '-')})"
+                f"({rmc_status_label_ascii(status.get('rmc_status', ''))})"
             ),
             (
-                f"緯度/経度: {status.get('position', '-')}  "
-                f"高度(m): {status.get('altitude_m', '-')}"
+                f"lat/lon: {status.get('position', '-')}  "
+                f"alt(m): {status.get('altitude_m', '-')}"
             ),
             (
-                f"使用衛星数: {status.get('satellites_used', '-')}  "
-                f"HDOP(信頼度目安): {status.get('hdop', '-')} "
-                f"({status.get('hdop_label', '-')}, 低いほど良い)"
+                f"sats used: {status.get('satellites_used', '-')}  "
+                f"HDOP(confidence): {status.get('hdop', '-')} "
+                f"({hdop_label_ascii(status.get('hdop', ''))}, lower is better)"
             ),
             "",
             "recent NMEA:",
