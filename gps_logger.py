@@ -4,6 +4,7 @@ import json
 import os
 import select
 import signal
+import sys
 import termios
 import time
 from datetime import datetime
@@ -103,6 +104,113 @@ def atomic_write_json(path: Path, data: dict):
     os.replace(tmp, path)
 
 
+def local_display_connected():
+    for status_path in Path("/sys/class/drm").glob("*/status"):
+        try:
+            if status_path.read_text().strip() == "connected":
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+class DisplayMirror:
+    def __init__(self, mode: str, target: str, max_lines: int, refresh_sec: float):
+        self.mode = mode
+        self.target = target
+        self.max_lines = max_lines
+        self.refresh_sec = refresh_sec
+        self.recent_lines = []
+        self.last_render_mono = 0.0
+        self.stream = None
+        self.enabled = self.should_enable()
+
+    def should_enable(self):
+        if self.mode == "never":
+            return False
+        if self.mode == "always":
+            return True
+        return local_display_connected()
+
+    def open(self):
+        if self.stream:
+            return True
+
+        try:
+            if self.target == "-":
+                self.stream = sys.stdout
+            else:
+                self.stream = open(self.target, "w", buffering=1, encoding="utf-8", errors="replace")
+            return True
+        except Exception:
+            self.enabled = False
+            return False
+
+    def update(self, line: str, status: dict, session_dir: Path):
+        if not self.enabled:
+            return
+
+        self.recent_lines.append(line)
+        if len(self.recent_lines) > self.max_lines:
+            self.recent_lines = self.recent_lines[-self.max_lines:]
+
+        now_mono = time.monotonic()
+        if now_mono - self.last_render_mono < self.refresh_sec:
+            return
+
+        self.render(status, session_dir)
+        self.last_render_mono = now_mono
+
+    def render(self, status: dict, session_dir: Path, message: str = ""):
+        if not self.open():
+            return
+
+        lines = [
+            "\033[2J\033[H",
+            "gps-logger live view",
+            f"updated: {status.get('last_update') or '-'}",
+            f"session: {session_dir}",
+        ]
+
+        if message:
+            lines.extend(["", message])
+
+        lines.extend([
+            "",
+            f"port: {status.get('port')}  baud: {status.get('baud')}",
+            (
+                f"lines: {status.get('total_lines', 0)}  "
+                f"checksum ok/ng: {status.get('checksum_ok', 0)}/{status.get('checksum_ng', 0)}"
+            ),
+            (
+                f"RMC: {status.get('rmc_status', '-')}  "
+                f"GGA fix: {status.get('fix_quality', '-')}  "
+                f"sats: {status.get('satellites_used', '-')}  "
+                f"HDOP: {status.get('hdop', '-')}"
+            ),
+            "",
+            "recent NMEA:",
+        ])
+
+        for recent in self.recent_lines:
+            lines.append(recent[:160])
+
+        try:
+            self.stream.write("\n".join(lines) + "\n")
+            self.stream.flush()
+        except Exception:
+            self.enabled = False
+
+    def close(self):
+        if self.stream and self.stream is not sys.stdout:
+            try:
+                self.stream.close()
+            except Exception:
+                pass
+        self.stream = None
+
+
 class RollingLogger:
     def __init__(self, out_dir: Path, rotate_sec: int, fsync_sec: int):
         self.out_dir = out_dir
@@ -184,6 +292,10 @@ def main():
     parser.add_argument("--out", default="/var/log/gps-logger")
     parser.add_argument("--rotate-sec", type=int, default=300)
     parser.add_argument("--fsync-sec", type=int, default=2)
+    parser.add_argument("--display", choices=["auto", "always", "never"], default="auto")
+    parser.add_argument("--display-tty", default="/dev/tty1")
+    parser.add_argument("--display-lines", type=int, default=12)
+    parser.add_argument("--display-refresh-sec", type=float, default=1.0)
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, handle_signal)
@@ -197,6 +309,12 @@ def main():
 
     logger = RollingLogger(out_dir, args.rotate_sec, args.fsync_sec)
     logger.start()
+    display = DisplayMirror(
+        mode=args.display,
+        target=args.display_tty,
+        max_lines=max(1, args.display_lines),
+        refresh_sec=max(0.1, args.display_refresh_sec),
+    )
 
     status = {
         "started_at": now_iso(),
@@ -207,6 +325,7 @@ def main():
         "checksum_ng": 0,
         "last_update": None,
     }
+    display.render(status, logger.session_dir, "waiting for NMEA data...")
 
     latest_status_path = out_dir / "latest_status.json"
     buffer = ""
@@ -241,6 +360,7 @@ def main():
 
                 status.update(parse_status(line))
                 logger.write_line(line)
+                display.update(line, status, logger.session_dir)
 
                 if status["total_lines"] % 5 == 0:
                     atomic_write_json(latest_status_path, status)
@@ -249,6 +369,7 @@ def main():
             atomic_write_json(latest_status_path, status)
         except Exception:
             pass
+        display.close()
         logger.close()
         os.close(fd)
 
