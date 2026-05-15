@@ -20,6 +20,17 @@ BAUD_MAP = {
     115200: termios.B115200,
 }
 
+DYNAMIC_MODELS = {
+    "portable": 0,
+    "stationary": 2,
+    "pedestrian": 3,
+    "automotive": 4,
+    "sea": 5,
+    "airborne-1g": 6,
+    "airborne-2g": 7,
+    "airborne-4g": 8,
+}
+
 
 running = True
 
@@ -57,6 +68,85 @@ def configure_serial(fd: int, baud: int):
     termios.tcflush(fd, termios.TCIOFLUSH)
 
 
+def log_event(message: str):
+    print(f"{now_iso()} {message}", flush=True)
+
+
+def ubx_checksum(payload: bytes) -> bytes:
+    ck_a = ck_b = 0
+    for b in payload:
+        ck_a = (ck_a + b) & 0xFF
+        ck_b = (ck_b + ck_a) & 0xFF
+    return bytes([ck_a, ck_b])
+
+
+def ubx_msg(cls: int, msg_id: int, payload: bytes) -> bytes:
+    body = bytes([cls, msg_id, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF]) + payload
+    return bytes([0xB5, 0x62]) + body + ubx_checksum(body)
+
+
+def write_ubx(fd: int, cls: int, msg_id: int, payload: bytes, delay: float = 0.15):
+    os.write(fd, ubx_msg(cls, msg_id, payload))
+    time.sleep(delay)
+
+
+def cfg_prt_uart1_115200() -> bytes:
+    return bytes([
+        0x01, 0x00, 0x00, 0x00,  # portID=UART1, reserved, txReady
+        0xD0, 0x08, 0x00, 0x00,  # mode=8N1
+        0x00, 0xC2, 0x01, 0x00,  # baudRate=115200
+        0x03, 0x00, 0x03, 0x00,  # inProto=UBX+NMEA, outProto=UBX+NMEA
+        0x00, 0x00, 0x00, 0x00,  # flags, reserved
+    ])
+
+
+def cfg_rate_10hz() -> bytes:
+    return bytes([
+        0x64, 0x00,  # measRate=100ms
+        0x01, 0x00,  # navRate=1
+        0x01, 0x00,  # timeRef=GPS
+    ])
+
+
+def cfg_nav5_dynamic_model(model: str) -> bytes:
+    payload = bytearray(36)
+    payload[0:2] = (0x0001).to_bytes(2, "little")  # apply dynModel only
+    payload[2] = DYNAMIC_MODELS[model]
+    return bytes(payload)
+
+
+def cfg_sbas_enabled() -> bytes:
+    return bytes([
+        0x01,                    # mode: SBAS enabled
+        0x07,                    # usage: range + differential correction + integrity
+        0x03,                    # maxSBAS: use up to 3 prioritized SBAS channels
+        0x00,                    # scanmode2: auto scan
+        0x00, 0x00, 0x00, 0x00,  # scanmode1: auto scan all valid PRNs
+    ])
+
+
+def cfg_msg_nmea(msg_id: int, uart1_rate: int) -> bytes:
+    return bytes([
+        0xF0,
+        msg_id,
+        0x00,        # DDC
+        uart1_rate,  # UART1
+        0x00,        # UART2
+        0x00,        # USB
+        0x00,        # SPI
+        0x00,
+    ])
+
+
+def cfg_save() -> bytes:
+    return bytes([
+        0x00, 0x00, 0x00, 0x00,  # clearMask
+        0xFF, 0xFF, 0x00, 0x00,  # saveMask
+        0x00, 0x00, 0x00, 0x00,  # loadMask
+        0x17,                    # deviceMask
+    ])
+
+
 def nmea_checksum_ok(line: str):
     if not line.startswith("$") or "*" not in line:
         return None
@@ -71,6 +161,160 @@ def nmea_checksum_ok(line: str):
         return actual == expected
     except Exception:
         return False
+
+
+def read_nmea_preview(fd: int, seconds: float):
+    deadline = time.monotonic() + seconds
+    buffer = ""
+    result = {
+        "count": 0,
+        "checksum_ok": 0,
+        "checksum_ng": 0,
+        "last_raw": None,
+    }
+
+    while time.monotonic() < deadline:
+        timeout = min(0.2, max(0.0, deadline - time.monotonic()))
+        readable, _, _ = select.select([fd], [], [], timeout)
+        if not readable:
+            continue
+
+        try:
+            data = os.read(fd, 4096)
+        except BlockingIOError:
+            continue
+
+        if not data:
+            continue
+
+        buffer += data.decode("ascii", errors="replace")
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip("\r\n \t")
+            if not line or not line.startswith("$"):
+                continue
+
+            checksum = nmea_checksum_ok(line)
+            if checksum is False:
+                result["checksum_ng"] += 1
+                continue
+
+            result["count"] += 1
+            result["last_raw"] = line
+            if checksum is True:
+                result["checksum_ok"] += 1
+
+    return result
+
+
+def ordered_baud_candidates(preferred_baud: int):
+    ordered = []
+    for baud in [preferred_baud, 115200, 9600, 38400, 57600, 19200, 4800]:
+        if baud in BAUD_MAP and baud not in ordered:
+            ordered.append(baud)
+    return ordered
+
+
+def detect_nmea_baud(fd: int, preferred_baud: int, seconds: float):
+    attempts = []
+    for baud in ordered_baud_candidates(preferred_baud):
+        configure_serial(fd, baud)
+        info = read_nmea_preview(fd, seconds)
+        attempts.append({
+            "baud": baud,
+            "count": info["count"],
+            "checksum_ok": info["checksum_ok"],
+            "checksum_ng": info["checksum_ng"],
+            "last_raw": info["last_raw"],
+        })
+        if info["count"] > 0:
+            return baud, attempts
+
+    return None, attempts
+
+
+def configure_gps_for_10hz(fd: int, current_baud: int, dynamic_model: str, enable_sbas: bool, save_config: bool):
+    log_event(f"gps startup config: sending 10Hz/115200 settings from {current_baud}bps")
+    configure_serial(fd, current_baud)
+
+    if current_baud != 115200:
+        write_ubx(fd, 0x06, 0x00, cfg_prt_uart1_115200(), delay=0.4)
+        configure_serial(fd, 115200)
+
+    write_ubx(fd, 0x06, 0x08, cfg_rate_10hz())
+
+    if dynamic_model != "none":
+        write_ubx(fd, 0x06, 0x24, cfg_nav5_dynamic_model(dynamic_model))
+
+    if enable_sbas:
+        write_ubx(fd, 0x06, 0x16, cfg_sbas_enabled())
+
+    for msg_id in [0x00, 0x04]:  # GGA, RMC
+        write_ubx(fd, 0x06, 0x01, cfg_msg_nmea(msg_id, 1), delay=0.05)
+
+    for msg_id in [0x02, 0x03, 0x05, 0x01]:  # GSA, GSV, VTG, GLL
+        write_ubx(fd, 0x06, 0x01, cfg_msg_nmea(msg_id, 0), delay=0.05)
+
+    if save_config:
+        write_ubx(fd, 0x06, 0x09, cfg_save(), delay=0.5)
+
+
+def prepare_serial_startup(fd: int, args):
+    status = {
+        "prefer_10hz": args.prefer_10hz,
+        "target_baud": args.baud,
+        "active_baud": args.baud,
+        "configured_10hz": False,
+        "fallback": False,
+        "detect_attempts": [],
+    }
+
+    if not args.prefer_10hz:
+        configure_serial(fd, args.baud)
+        return args.baud, status
+
+    detected_baud, attempts = detect_nmea_baud(fd, args.baud, args.startup_detect_sec)
+    status["detect_attempts"] = attempts
+    status["detected_baud"] = detected_baud
+
+    if detected_baud is None:
+        log_event("gps startup config: no NMEA detected before configuration; trying target baud anyway")
+        detected_baud = args.baud
+
+    try:
+        configure_gps_for_10hz(
+            fd=fd,
+            current_baud=detected_baud,
+            dynamic_model=args.startup_dynamic_model,
+            enable_sbas=not args.startup_no_sbas,
+            save_config=args.startup_save_config,
+        )
+    except OSError as exc:
+        status["configure_error"] = str(exc)
+        log_event(f"gps startup config: write failed: {exc}")
+
+    configure_serial(fd, 115200)
+    verify = read_nmea_preview(fd, args.startup_verify_sec)
+    status["verify_115200"] = verify
+
+    if verify["count"] > 0:
+        status["active_baud"] = 115200
+        status["configured_10hz"] = True
+        log_event("gps startup config: using 115200bps, 10Hz configuration accepted")
+        return 115200, status
+
+    fallback_baud, fallback_attempts = detect_nmea_baud(fd, detected_baud, args.startup_detect_sec)
+    status["fallback"] = True
+    status["fallback_attempts"] = fallback_attempts
+    if fallback_baud is not None:
+        status["active_baud"] = fallback_baud
+        log_event(f"gps startup config: 115200bps not verified; falling back to {fallback_baud}bps")
+        return fallback_baud, status
+
+    configure_serial(fd, args.baud)
+    status["active_baud"] = args.baud
+    log_event(f"gps startup config: no fallback NMEA detected; continuing at {args.baud}bps")
+    return args.baud, status
 
 
 def parse_float(text: str):
@@ -423,6 +667,17 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--port", default="/dev/ttyAMA0", help="UART device to read NMEA from")
     parser.add_argument("--baud", type=int, default=115200, help="UART baud rate")
+    parser.add_argument("--prefer-10hz", action="store_true", help="try to configure GPS to 10Hz/115200bps at startup")
+    parser.add_argument("--startup-detect-sec", type=float, default=2.0, help="seconds to probe each baud during startup detection")
+    parser.add_argument("--startup-verify-sec", type=float, default=3.0, help="seconds to verify 115200bps after startup configuration")
+    parser.add_argument(
+        "--startup-dynamic-model",
+        choices=["none", *DYNAMIC_MODELS.keys()],
+        default="automotive",
+        help="dynamic model used when --prefer-10hz configures the GPS",
+    )
+    parser.add_argument("--startup-no-sbas", action="store_true", help="do not enable SBAS/MSAS during startup GPS configuration")
+    parser.add_argument("--startup-save-config", action="store_true", help="save startup GPS configuration to module flash")
     parser.add_argument("--out", default="/var/log/gps-logger", help="log output directory")
     parser.add_argument("--rotate-sec", type=int, default=300, help="seconds per log part")
     parser.add_argument("--fsync-sec", type=int, default=2, help="seconds between fsync calls")
@@ -438,8 +693,8 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    fd = os.open(args.port, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
-    configure_serial(fd, args.baud)
+    fd = os.open(args.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    active_baud, startup_status = prepare_serial_startup(fd, args)
 
     logger = RollingLogger(out_dir, args.rotate_sec, args.fsync_sec)
     logger.start()
@@ -453,15 +708,18 @@ def main():
     status = {
         "started_at": now_iso(),
         "port": args.port,
-        "baud": args.baud,
+        "baud": active_baud,
+        "requested_baud": args.baud,
+        "startup": startup_status,
         "total_lines": 0,
         "checksum_ok": 0,
         "checksum_ng": 0,
         "last_update": None,
     }
+    latest_status_path = out_dir / "latest_status.json"
+    atomic_write_json(latest_status_path, status)
     display.render(status, logger.session_dir, "waiting for NMEA data...")
 
-    latest_status_path = out_dir / "latest_status.json"
     buffer = ""
 
     try:

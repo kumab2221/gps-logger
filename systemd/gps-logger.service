@@ -4,7 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
+ExecStart=/usr/bin/python3 /opt/gps-logger/gps_logger.py --port /dev/ttyAMA0 --baud 115200 --prefer-10hz --out /var/log/gps-logger --rotate-sec 300 --fsync-sec 2
 Restart=always
 RestartSec=2
 StandardOutput=journal
